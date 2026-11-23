@@ -1,74 +1,94 @@
 # Porous-Medium Tumor Growth UQ with Multi-Fidelity and RFPS Methods
 
-This repository provides the nutrient-related uncertainty experiment from:
+This repository accompanies **Huimin Yu, Liu Liu, Yu Feng, and Te Qi, _On multi-fidelity methods for a tumor growth model with uncertainties_.** It contains the nutrient-related experiment associated with **Test 2(a) and Test 2(b)** (original code name `Test1a`).
 
-**Huimin Yu, Liu Liu, Yu Feng, and Te Qi.**  
-*On multi-fidelity methods for a tumor growth model with uncertainties.*
+The experiment combines fine-grid porous-medium equations (PME), a level-set approximation of the Hele–Shaw limit (LS), and coarse-grid PME. Pivoted-Cholesky bi-fidelity (BF), residual-based farthest-point sampling (RFPS), and tri-fidelity (TRF) reconstruction are compared through density statistics and errors on independent parameters.
 
-The paper develops a hierarchical multi-fidelity framework for uncertainty quantification in porous-medium-equation tumor growth models with moving free boundaries. It combines coarse-grid porous-medium simulations, level-set approximations of the Hele–Shaw limit, and fine-grid porous-medium simulations.
+## Model and settings
 
-Residual-based farthest-point sampling (RFPS) combines projection-residual information with distance-based sample separation to enrich the approximation space. Bi-fidelity (BF) and tri-fidelity (TRF) reconstructions use this hierarchy to approximate high-fidelity solutions with a limited high-fidelity sampling budget.
-
-## Experiment: Test 2(a) and Test 2(b)
-
-The repository contains the nutrient-related uncertainty experiment in Section 5.2 of the paper, corresponding to the original code entry named `Test1a`.
-
-Five independent random variables, each uniformly distributed on $[-1,1]$, perturb nutrient consumption, boundary nutrient concentration, the growth coefficient, and the initial tumor radius. The paper defines
+Five independent inputs satisfy $z_k\sim\mathcal U[-1,1]$. The physical coefficients are
 
 $$
-\lambda=50\left(1+\sum_{k=1}^{5}\frac{z_k}{2k}\right),
-\qquad
-c_B=20\left(1+\sum_{k=1}^{5}\frac{z_k}{2k}\right),
+\lambda=50\left(1+\sum_{k=1}^{5}\frac{z_k}{2k}\right),\quad
+c_B=20\left(1+\sum_{k=1}^{5}\frac{z_k}{2k}\right),\quad
+G_0=0.5(1+z_1),\quad R_0=0.45(1+z_1).
 $$
 
-$$
-G_0=0.5(1+z_1),
-\qquad
-R_0=0.45(1+z_1).
-$$
+Every solver receives the multiplier `G0_k=1+z1` and starts with `G0=0.5*G0_k`. The physical coefficient is used once in its growth or pressure equation. The same convention applies to PME, coarse PME, and LS.
 
-The initial density is 0.95 inside the disk of radius $R_0$ and zero outside. The spatial domain is $[-2.5,2.5]^2$, with final time $T=1$ and pressure-law exponents $m=8$ and $m=64$.
+Keep the stored `G0_samples=1+z1` unchanged; the factor 0.5 is applied inside the solvers.
 
-- **Test 2(a):** Compare pivoted-Cholesky BF reconstruction with RFPS-enriched BF reconstruction, using the Hele–Shaw level-set model and the fine-grid porous-medium model.
-- **Test 2(b):** Use the coarse-PME–level-set–fine-PME hierarchy for TRF reconstruction.
+The initial density is 0.95 inside the disk of radius $R_0$ and zero outside, on $[-2.5,2.5]^2$.
 
-The quantities of interest include density means, standard deviations, spatial slices, and reconstruction errors at matched high-fidelity budgets.
+| Setting | Value |
+|---|---|
+| Final time | 1 |
+| HF exponents | 8 and 64 |
+| Fine-grid spacing | 0.05 |
+| HF time step | 0.002 for both exponents |
+| LS time step | 0.05 |
+| Coarse PME spacing / time step / exponent | 0.1 / 0.002 / 8 |
+| Initial LF candidates | 500 |
+| Enrichment pool | 100 |
+| Independent evaluation samples | 20 by default, configurable |
+| Initial basis / maximum accepted additions | 15 / 3 |
+| RFPS residual weight / regularization | 0.4 / 1e-8 |
+| Evaluation random seed | 20261123 |
 
-## Running the Code
+The supplied spatial RFPS weights are retained. The coarse exponent remains 8 for both HF regimes. All settings are saved with each computed result.
 
-In MATLAB, set the current folder to the repository root. The level-set solver requires the Image Processing Toolbox.
+## Running
+
+Use MATLAB with Image Processing Toolbox, or GNU Octave with the image package (`pkg load image`). Set the current folder to the repository root.
 
 ```matlab
-run_experiment                     % Default experiment: fresh computation for m = 8
-run_experiment('fresh',64)          % Run the same experiment for m = 64
-run_experiment('fresh_reference',8) % Also recompute all 100 HF reference samples
-run_experiment('cached',8)         % Recompute selection and reconstruction from saved snapshots
-run_experiment('pde_check',8)       % Run one full-time PDE sample
-plot_saved                         % Plot saved BF errors and TRF statistics
+run_experiment                         % Full-time computation, m=8
+run_experiment('fresh',64)              % Full-time computation, m=64
+run_experiment('short',8)               % Complete workflow at T=0.05
+run_experiment('short',64)              % Complete workflow at T=0.05
+run_experiment('fresh_reference',8)     % Additionally compute HF at every enrichment-pool parameter
+run_experiment('cached',8)              % Reuse a matching cache from a completed full-time computation
+plot_saved                             % Plot the supplied original figure datasets
 ```
 
-The `fresh` mode regenerates the low-fidelity candidates, coarse-grid snapshots, and selected high-fidelity basis. It reuses the supplied high-fidelity reference samples, including values used for enrichment. The `fresh_reference` mode also recomputes those reference samples.
+`fresh` computes current-model LF solutions, the selected HF solutions, and independent LF/HF evaluation solutions. `fresh_reference` also computes the full HF enrichment pool. `cached` reuses only a cache generated by this version with matching settings. After a short run, use `run_experiment('cached',8,struct('T',0.05))`.
 
-Computational inputs are stored in `data/bf_compute_m08.mat` and `data/bf_compute_m64.mat`. Generated outputs are written to `results/` without overwriting the supplied datasets.
+For a larger independent evaluation set, run
 
-## Files and Dependencies
+```matlab
+run_experiment('fresh',8,struct('n_eval',100))
+```
+
+`run_experiment('pde_check',8)` evaluates one parameter with all three PDE solvers. The main entry also accepts `n_candidate`, `n_pool`, `seed`, and `make_plots` options. Sample-count reductions are optional development settings.
+
+## Selection and independent evaluation
+
+BF and RFPS share the first 15 Cholesky nodes. BF continues Cholesky selection to 18 nodes, while RFPS accepts up to three additional enrichment-pool nodes. TRF starts from coarse-PME selection, refines its LS basis, and transfers LS projection coefficients to HF solutions. Distances are measured directly from candidate LF solutions to the actual selected LF basis vectors.
+
+The independent evaluation parameters never enter basis selection or enrichment. All methods use the same evaluation set. Results include complete error curves and a comparison at `common_budget`, the largest basis count available to all three methods. Sample rejection or numerical rank limits can reduce this count below 18. Mean and standard-deviation plots identify each method's actual final basis count.
+
+For $M$ spatial points and $N$ evaluation samples, the reported metrics are
+
+$$
+\mathrm{RMSE}=\sqrt{\frac{1}{MN}\sum_{i,j}(H_{ij}-\widehat H_{ij})^2},\qquad
+E_{\mathrm{rel}}=\frac{\|H-\widehat H\|_F}{\|H\|_F}.
+$$
+
+The relative error is defined for nonzero reference norm. It is an aggregate sample-matrix norm ratio. Statistical standard deviations use normalization by $N$. Computed outputs include basis indices, independent parameters, actual new solver-call counts, and separate construction, evaluation, and projection times. Counts describe the combined comparison run, whose HF values are shared across methods when possible.
+
+## Files and data
 
 | Path | Purpose |
 |---|---|
-| `run_experiment.m` | Main BF, RFPS, and TRF computation |
-| `plot_saved.m` | Entry point for saved-data plotting |
-| `plot_error.m` | Reconstruction-error plots |
-| `plot_fields.m` | Statistical fields and spatial slices |
-| `solver/solve_pme.m` | Fine-grid porous-medium solver |
-| `solver/solve_heleshaw.m` | Hele–Shaw level-set solver |
-| `solver/solve_cmpme.m` | Coarse-grid porous-medium solver |
-| `solver/select_basis.m` | Initial basis selection |
-| `solver/enrich_basis.m` | RFPS basis enrichment |
-| `data/bf_compute_m08.mat` | Computational inputs and snapshots for $m=8$ |
-| `data/bf_compute_m64.mat` | Computational inputs and snapshots for $m=64$ |
-| `data/bf_enrichment_paper.mat` | Saved BF enrichment-error data |
-| `data/trifidelity_paper_fields.mat` | Saved TRF plotting data |
+| `run_experiment.m` | Computation, selection, independent evaluation, and result saving |
+| `plot_computed.m` | Computed error curves, statistical fields, and slices |
+| `plot_saved.m`, `plot_error.m`, `plot_fields.m` | Original saved-data figure workflow |
+| `solver/solve_pme.m`, `solve_heleshaw.m`, `solve_cmpme.m` | PDE solvers and their auxiliary functions |
+| `solver/select_basis.m`, `enrich_basis.m` | Cholesky selection and RFPS enrichment |
+| `solver/evaluate_basis.m` | Reconstruction and independent error evaluation |
+| `data/bf_compute_m08.mat`, `bf_compute_m64.mat` | Original parameter pools and numerical inputs |
+| `data/bf_enrichment_paper.mat`, `trifidelity_paper_fields.mat` | Original plotting datasets |
 
-Nutrient, pressure, flux, and distance-function calculations are retained within the corresponding solvers.
+The original plotting datasets retain their saved coefficients and error normalization. The new computation uses the unified growth coefficient and writes current-model results to `results/`. `plot_saved` displays the original figures. The default computation regenerates LF solutions for the unified model and uses the archived MAT files for parameters and RFPS settings.
 
-Keep `solver/` and `data/` in their existing locations and retain the dataset filenames. Entry points resolve paths relative to the repository. The generated `results/` directory is excluded by `.gitignore`.
+Keep the directory structure and MAT filenames. `results/` is generated automatically and excluded from Git. This repository contains one selected experiment with two exponent choices.

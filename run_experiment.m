@@ -1,120 +1,201 @@
-% 完整实验入口：读取原设置、调用求解器、重构并保存结果。
-function results=run_experiment(mode,m)
-%RUN_EXPERIMENT Recompute original BF/RFPS/TRF algorithms, retaining PDE solvers.
-% cached: redo selection, enrichment, projection and errors using saved snapshots.
-% pde_check: run one complete-time PME/LS/coarse-PME sample at saved settings.
-% fresh: regenerate candidate LS and selected HF; reuse expensive HF reference.
-% fresh_reference: additionally regenerate the complete held-out HF reference.
-if nargin<1,mode='fresh';end
-if nargin<2,m=8;end
-m=double(m);
-assert(ismember(m,[8 64]),'m must be 8 or 64');
-assert(any(strcmp(mode,{'cached','short','pde_check','fresh','fresh_reference'})),'Unknown mode');
-root=fileparts(mfilename('fullpath'));addpath(fullfile(root,'solver'));out=fullfile(root,'results');if ~exist(out,'dir'),mkdir(out);end
-S=load(fullfile(root,'data',sprintf('bf_compute_m%02d.mat',m)));
-% MAT metadata may use integer storage; time arithmetic must use floating point.
-S.T_final=double(S.T_final);S.dx=double(S.dx);S.dt_PME=double(S.dt_PME);S.dt_HS=double(S.dt_HS);
-if strcmp(mode,'short')
- % 短时测试使用原网格和原步长：LS 1 步，PME/粗 PME 各 25 步。
- Tshort=.05;j=1;p=[S.lambda_t(j);S.cB_t(j);S.G0_t(j);S.R0_t(j)];
- initial=.95*double(S.X.^2+S.Y.^2<p(4)^2);
- L=solve_heleshaw(j,Tshort,S.dx,S.dx,S.dt_HS,p(1),p(2),p(3),initial);
- H=solve_pme(j,Tshort,m,S.dx,S.dx,S.dt_PME,p(1),p(2),p(3),initial);
- [Xc,Yc]=meshgrid(-2.5:.1:2.5);initial_c=.95*double(Xc.^2+Yc.^2<p(4)^2);
- C=solve_cmpme(j,Tshort,8,.1,.002,p(1),p(2),p(3),initial_c);
- assert(isequal(size(L),[101 101])&&isequal(size(H),[101 101])&&isequal(size(C),[51 51]));
- assert(all(isfinite([L(:);H(:);C(:)])),'Nonfinite short-run output');
- results=struct('T',Tshort,'m',m,'L',L,'H',H,'C',C,'passed',true);
- save(fullfile(out,sprintf('short_m%02d.mat',m)),'-struct','results','-v7');
- fprintf('PASS: short PDE m=%d, T=%g\n',m,Tshort);return;
+function results = run_experiment(mode, m, options)
+%RUN_EXPERIMENT Compute BF/RFPS/TRF with a common physical growth coefficient.
+% options may set T, n_candidate, n_pool, n_eval, seed, or make_plots.
+% All errors use independent samples generated before basis construction.
+if nargin < 1, mode = 'fresh'; end
+if nargin < 2, m = 8; end
+if nargin < 3, options = struct(); end
+assert(ismember(m, [8 64]), 'm must be 8 or 64.');
+assert(any(strcmp(mode, {'fresh', 'fresh_reference', 'cached', 'short', 'pde_check'})), ...
+    'Unknown computation mode.');
+root = fileparts(mfilename('fullpath'));
+addpath(fullfile(root, 'solver'));
+out = fullfile(root, 'results');
+if ~exist(out, 'dir'), mkdir(out); end
+source = load(fullfile(root, 'data', sprintf('bf_compute_m%02d.mat', m)));
+settings = struct('schema', 2, 'm', double(m), 'T', double(source.T_final), ...
+    'dx', double(source.dx), 'dt_pme', double(source.dt_PME), ...
+    'dt_ls', double(source.dt_HS), 'coarse_dx', 0.1, 'coarse_dt', 0.002, ...
+    'coarse_m', 8, 'growth_base', 0.5, 'n_candidate', 500, 'n_pool', 100, ...
+    'n_eval', 20, 'seed', 20261123, 'initial_basis', 15, 'max_add', 3, ...
+    'rfps_alpha', double(source.tri_alpha), 'rfps_weight', double(source.tri_lambda), ...
+    'rfps_spatial_weights', source.tri_wvec, 'make_plots', true);
+if strcmp(mode, 'short'), settings.T = 0.05; end
+allowed = {'T', 'n_candidate', 'n_pool', 'n_eval', 'seed', 'make_plots'};
+names = fieldnames(options);
+for j = 1:numel(names)
+    assert(ismember(names{j}, allowed), 'Unknown option: %s', names{j});
+    settings.(names{j}) = options.(names{j});
 end
-if strcmp(mode,'pde_check')
- j=1;p=[S.lambda_t(j);S.cB_t(j);S.G0_t(j);S.R0_t(j)];initial=.95*double(S.X.^2+S.Y.^2<p(4)^2);
- L=solve_heleshaw(j,S.T_final,S.dx,S.dx,S.dt_HS,p(1),p(2),p(3),initial);
- H=solve_pme(j,S.T_final,m,S.dx,S.dx,S.dt_PME,p(1),p(2),p(3),initial);
- [Xc,Yc]=meshgrid(-2.5:.1:2.5);initial_c=.95*double(Xc.^2+Yc.^2<p(4)^2);
- C=solve_cmpme(j,S.T_final,8,.1,.002,p(1),p(2),p(3),initial_c);
- results=struct('L',L,'H',H,'C',C,'m',m,'sample',j,'T',S.T_final,'PME_steps',round(S.T_final/S.dt_PME), ...
- 'LS_saved_max_difference',max(abs(L(:)-double(S.rhoL_test(:,j)))), ...
- 'HF_saved_max_difference',max(abs(H(:)-S.rhoH_test(:,j))));
- Cfine=interp2(Xc,Yc,C,S.X,S.Y,'linear',0);
- results.coarse_saved_max_difference=max(abs(Cfine(:)-S.tri_rhoM_(:,j)));
- save(fullfile(out,sprintf('pde_check_m%02d.mat',m)),'-struct','results','-v7');
- fprintf('PDE m=%d T=%g: saved LS/HF max difference %.4g / %.4g\n',m,S.T_final,results.LS_saved_max_difference,results.HF_saved_max_difference);return;
+assert(settings.n_candidate >= 18 && settings.n_candidate <= size(source.z, 2), ...
+    'Use between 18 and 500 candidates.');
+assert(settings.n_pool >= 18 && settings.n_pool <= size(source.z_test, 2), ...
+    'Use between 18 and 100 enrichment-pool samples.');
+assert(settings.n_eval >= 2 && settings.n_eval == fix(settings.n_eval), 'n_eval must be an integer >= 2.');
+assert(all([settings.n_candidate settings.n_pool] == fix([settings.n_candidate settings.n_pool])), ...
+    'Sample counts must be integers.');
+for dt = [settings.dt_pme settings.dt_ls settings.coarse_dt]
+    assert(settings.T > 0 && abs(round(settings.T/dt)*dt-settings.T) < 1e-12, ...
+        'T must be a positive multiple of all time steps (use T=0.05 for a short run).');
 end
-candidate=double(S.rho_L);L=double(S.rhoL_test);H=double(S.rhoH_test);
-if any(strcmp(mode,{'fresh','fresh_reference'}))
- for j=1:size(S.z,2)
-  p=[S.lambda_samples(j);S.cB_samples(j);S.G0_samples(j);S.R0_samples(j)];
-  initial=.95*double(S.X.^2+S.Y.^2<p(4)^2);
-  a=solve_heleshaw(j,S.T_final,S.dx,S.dx,S.dt_HS,p(1),p(2),p(3),initial);candidate(:,j)=a(:);
-  fprintf('Candidate LS %d/%d\n',j,size(candidate,2));
- end
- for j=1:size(S.z_test,2)
-  p=[S.lambda_t(j);S.cB_t(j);S.G0_t(j);S.R0_t(j)];initial=.95*double(S.X.^2+S.Y.^2<p(4)^2);
-  a=solve_heleshaw(j,S.T_final,S.dx,S.dx,S.dt_HS,p(1),p(2),p(3),initial);L(:,j)=a(:);
-  if strcmp(mode,'fresh_reference'),a=solve_pme(j,S.T_final,m,S.dx,S.dx,S.dt_PME,p(1),p(2),p(3),initial);H(:,j)=a(:);end
- end
+candidate_z = source.z(:, 1:settings.n_candidate);
+pool_z = source.z_test(:, 1:settings.n_pool);
+previous_rng = rng;
+rng(settings.seed, 'twister');
+eval_z = 2 * rand(size(candidate_z, 1), settings.n_eval) - 1;
+rng(previous_rng);
+assert(~any(ismember(eval_z', [candidate_z pool_z]', 'rows')), ...
+    'Evaluation parameters overlap with construction parameters.');
+[X, Y] = meshgrid(-2.5:settings.dx:2.5);
+[Xc, Yc] = meshgrid(-2.5:settings.coarse_dx:2.5);
+cache_path = fullfile(out, sprintf('basis_cache_m%02d.mat', m));
+timer = tic;
+counts = struct('candidate_ls', 0, 'pool_ls', 0, 'coarse_pme', 0, ...
+    'candidate_hf', 0, 'pool_hf', 0, 'evaluation_ls', 0, 'evaluation_hf', 0);
+if strcmp(mode, 'pde_check')
+    z = pool_z(:, 1);
+    low = solve_sample(z, 'ls');
+    high = solve_sample(z, 'hf');
+    coarse = solve_sample(z, 'coarse');
+    results = struct('settings', settings, 'z', z, 'L', low, 'H', high, 'C', coarse);
+    assert(all(isfinite([low(:); high(:); coarse(:)])), 'Nonfinite PDE result.');
+    save(fullfile(out, sprintf('pde_check_m%02d.mat', m)), '-struct', 'results', '-v7');
+    return;
 end
-[ids,~]=select_basis(candidate,S.z,15);ids=ids(:)';
-PL=candidate(:,ids);
-if strcmp(mode,'cached')
- [found,loc]=ismember(ids,S.u_inp(:)');
- assert(all(found),'Recomputed selection contains HF nodes absent from cache; use fresh mode');
- PH=S.phi_H(:,loc);
+if strcmp(mode, 'cached')
+    assert(exist(cache_path, 'file') == 2, 'Run fresh or short first to create the current-model cache.');
+    stored = load(cache_path);
+    expected = settings; expected.make_plots = true;
+    actual = stored.cache.settings; actual.make_plots = true;
+    assert(isequal(expected, actual) && isequal(stored.cache.candidate_z, candidate_z) && ...
+        isequal(stored.cache.pool_z, pool_z) && isequal(stored.cache.eval_z, eval_z), ...
+        'Cache settings differ. Recompute with fresh or use matching options.');
+    cache = stored.cache;
 else
- PH=zeros(numel(S.X),numel(ids));
- for j=1:numel(ids)
-  k=ids(j);p=[S.lambda_samples(k);S.cB_samples(k);S.G0_samples(k);S.R0_samples(k)];
-  initial=.95*double(S.X.^2+S.Y.^2<p(4)^2);
-  a=solve_pme(k,S.T_final,m,S.dx,S.dx,S.dt_PME,p(1),p(2),p(3),initial);PH(:,j)=a(:);
- end
+    n_space = numel(X);
+    cache = struct('settings', settings, 'candidate_z', candidate_z, ...
+        'pool_z', pool_z, 'eval_z', eval_z);
+    cache.candidate_low = zeros(n_space, settings.n_candidate);
+    cache.pool_low = zeros(n_space, settings.n_pool);
+    cache.pool_coarse = zeros(n_space, settings.n_pool);
+    cache.candidate_high = nan(n_space, settings.n_candidate);
+    cache.pool_high = nan(n_space, settings.n_pool);
+    for j = 1:settings.n_candidate
+        cache.candidate_low(:, j) = solve_sample(candidate_z(:, j), 'ls');
+        counts.candidate_ls = counts.candidate_ls + 1;
+        if mod(j, 25) == 0, fprintf('Candidate LS %d/%d\n', j, settings.n_candidate); end
+    end
+    for j = 1:settings.n_pool
+        cache.pool_low(:, j) = solve_sample(pool_z(:, j), 'ls');
+        cache.pool_coarse(:, j) = solve_sample(pool_z(:, j), 'coarse');
+        counts.pool_ls = counts.pool_ls + 1;
+        counts.coarse_pme = counts.coarse_pme + 1;
+        if strcmp(mode, 'fresh_reference'), get_pool_hf(j); end
+        if mod(j, 20) == 0, fprintf('Enrichment pool %d/%d\n', j, settings.n_pool); end
+    end
 end
-[PE,QE,added]=enrich_basis(PL,PH,L,H,S.tri_K_add,S.tri_alpha,true,S.tri_wvec,S.tri_lambda,[]);
-[base,base_reconstruction]=projection_errors(PL,PH,L,H);
-[enriched,enriched_reconstruction]=projection_errors(PE,QE,L,H);
-% Rebuild the archived TRF seed from the original coarse snapshot pool.
-C=double(S.tri_rhoM_);TL=double(S.tri_rhoL_);TH=double(S.tri_rhoH_);
-if any(strcmp(mode,{'fresh','fresh_reference'}))
- TL=L;TH=H;[Xc,Yc]=meshgrid(-2.5:.1:2.5);
- for j=1:size(S.z_test,2)
-  p=[S.lambda_t(j);S.cB_t(j);S.G0_t(j);S.R0_t(j)];initial_c=.95*double(Xc.^2+Yc.^2<p(4)^2);
-  a=solve_cmpme(j,S.T_final,8,.1,.002,p(1),p(2),p(3),initial_c);a=interp2(Xc,Yc,a,S.X,S.Y,'linear',0);C(:,j)=a(:);
-  fprintf('TRF coarse PME %d/%d\n',j,size(C,2));
- end
+% Baseline and RFPS share the same initial Cholesky basis.
+[baseline_ids, ~] = select_basis(cache.candidate_low, candidate_z, ...
+    settings.initial_basis + settings.max_add);
+initial_count = min(settings.initial_basis, numel(baseline_ids));
+initial_ids = baseline_ids(1:initial_count);
+initial_low = cache.candidate_low(:, initial_ids);
+initial_high = zeros(size(initial_low));
+for j = 1:initial_count, initial_high(:, j) = get_candidate_hf(initial_ids(j)); end
+[rfps_low, rfps_high, rfps_added] = enrich_basis(initial_low, initial_high, ...
+    cache.pool_low, @get_pool_hf, settings.max_add, settings.rfps_alpha, true, ...
+    settings.rfps_spatial_weights, settings.rfps_weight, []);
+[trf_ids, ~] = select_basis(cache.pool_coarse, pool_z, settings.initial_basis);
+trf_seed_high = zeros(numel(X), numel(trf_ids));
+for j = 1:numel(trf_ids), trf_seed_high(:, j) = get_pool_hf(trf_ids(j)); end
+[trf_low, trf_high, trf_added] = enrich_basis(cache.pool_low(:, trf_ids), ...
+    trf_seed_high, cache.pool_low, @get_pool_hf, settings.max_add, ...
+    settings.rfps_alpha, true, settings.rfps_spatial_weights, settings.rfps_weight, []);
+baseline_low = cache.candidate_low(:, baseline_ids);
+baseline_high = zeros(size(baseline_low));
+for j = 1:numel(baseline_ids), baseline_high(:, j) = get_candidate_hf(baseline_ids(j)); end
+construction_seconds = toc(timer);
+% The independent evaluation set is first used after all selection is complete.
+timer = tic;
+if ~strcmp(mode, 'cached')
+    cache.eval_low = zeros(numel(X), settings.n_eval);
+    cache.eval_high = zeros(numel(X), settings.n_eval);
+    for j = 1:settings.n_eval
+        cache.eval_low(:, j) = solve_sample(eval_z(:, j), 'ls');
+        cache.eval_high(:, j) = solve_sample(eval_z(:, j), 'hf');
+        counts.evaluation_ls = counts.evaluation_ls + 1;
+        counts.evaluation_hf = counts.evaluation_hf + 1;
+        fprintf('Independent evaluation %d/%d\n', j, settings.n_eval);
+    end
 end
-[coarse_ids,~]=select_basis(C,S.z_test,15);coarse_ids=coarse_ids(:)';
-[TP,TQ,trf_added]=enrich_basis(TL(:,coarse_ids),TH(:,coarse_ids),TL,TH,S.tri_K_add,S.tri_alpha,true,S.tri_wvec,S.tri_lambda,[]);
-[trf_error,trf_reconstruction]=projection_errors(TP,TQ,TL,TH);
-results=struct('mode',mode,'m',m,'initial_indices',ids,'enrichment_indices',added, ...
- 'trf_initial_indices',coarse_ids,'trf_enrichment_indices',trf_added, ...
- 'baseline_error',base,'enriched_error',enriched,'trf_error',trf_error, ...
- 'baseline_reconstruction',base_reconstruction,'enriched_reconstruction',enriched_reconstruction, ...
- 'trf_reconstruction',trf_reconstruction,'computed_phiL',PE,'computed_phiH',QE, ...
- 'saved_initial_order_matches',isequal(ids,S.u_inp(:)'), ...
- 'saved_enriched_basis_max_difference',array_difference(PE,double(S.tri_phiL_ls)), ...
- 'saved_enriched_error_max_difference',array_difference(enriched(:),S.tri_err_LS(:)), ...
- 'saved_trf_error_max_difference',array_difference(trf_error(:),S.tri_err_TRI(:)));
-assert(all(isfinite(enriched))&&all(isfinite(trf_error)),'Nonfinite reconstruction error');
-save(fullfile(out,sprintf('computed_%s_m%02d.mat',mode,m)),'-struct','results','-v7');
-f=figure('visible','off','Color','w','paperpositionmode','auto');
-semilogy(1:numel(base),base,'ko-',1:numel(enriched),enriched,'bs--','LineWidth',1.5);
-xlabel('HF basis count');ylabel('Original scaled spatial error');legend({'Computed BF','Computed BF + RFPS'});grid on;
-print(f,fullfile(out,sprintf('computed_%s_m%02d.png',mode,m)),'-dpng','-r150');close(f);
-fprintf('Computed m=%d: saved enriched basis/error difference %.4g / %.4g; TRF error difference %.4g\n',m,results.saved_enriched_basis_max_difference,results.saved_enriched_error_max_difference,results.saved_trf_error_max_difference);
-end
-function [errors,reconstruction]=projection_errors(PL,PH,L,H)
-% Original conditional regularization and original sample/error normalization.
-errors=zeros(size(PL,2),1);
-for r=1:size(PL,2)
- G=PL(:,1:r)'*PL(:,1:r);rhs=PL(:,1:r)'*L;
- if r>1&&cond(G)>1e12,G=G+1e-8*trace(G)/r*eye(r);end
- reconstruction=PH(:,1:r)*(G\rhs);D=H-reconstruction;
- errors(r)=sqrt(mean(sum(D.^2,1)/size(H,1)))/size(H,2);
-end
-end
+evaluation_seconds = toc(timer);
+timer = tic;
+results = struct('settings', settings, 'X', X, 'Y', Y, 'evaluation_parameters', eval_z, ...
+    'baseline_indices', baseline_ids, 'rfps_initial_indices', initial_ids, ...
+    'rfps_enrichment_indices', rfps_added, 'trf_initial_indices', trf_ids, ...
+    'trf_enrichment_indices', trf_added, 'reference_mean', mean(cache.eval_high, 2), ...
+    'reference_std', std(cache.eval_high, 1, 2));
+results.bf = evaluate_basis(baseline_low, baseline_high, cache.eval_low, cache.eval_high);
+results.rfps = evaluate_basis(rfps_low, rfps_high, cache.eval_low, cache.eval_high);
+results.trf = evaluate_basis(trf_low, trf_high, cache.eval_low, cache.eval_high);
+results.common_budget = min([results.bf.n_basis, results.rfps.n_basis, results.trf.n_basis]);
+r = results.common_budget;
+results.equal_budget_rmse = [results.bf.rmse(r), results.rfps.rmse(r), results.trf.rmse(r)];
+results.equal_budget_relative_l2 = [results.bf.relative_l2(r), results.rfps.relative_l2(r), results.trf.relative_l2(r)];
+results.basis = struct('bf_low', baseline_low, 'bf_high', baseline_high, ...
+    'rfps_low', rfps_low, 'rfps_high', rfps_high, 'trf_low', trf_low, 'trf_high', trf_high);
+results.new_solver_calls = counts;
+results.construction_seconds = construction_seconds;
+results.evaluation_seconds = evaluation_seconds;
+results.projection_seconds = toc(timer);
+assert(all(isfinite(results.equal_budget_rmse)), 'Nonfinite reconstruction error.');
+% Atomic replacement prevents an interrupted write from becoming a valid cache.
+temporary = [tempname(out) '.mat'];
+save(temporary, 'cache', '-v7');
+movefile(temporary, cache_path, 'f');
+result_path = fullfile(out, sprintf('computed_%s_m%02d.mat', mode, m));
+save(result_path, '-struct', 'results', '-v7');
+if settings.make_plots, plot_computed(results, out); end
+fprintf('m=%d, T=%g, independent N=%d, common HF basis count=%d\n', m, settings.T, settings.n_eval, r);
+fprintf('Equal-budget RMSE (BF/RFPS/TRF): %.7g %.7g %.7g\n', results.equal_budget_rmse);
 
-function value=array_difference(A,B)
-% Different accepted enrichment counts are reported, not silently padded.
-if isequal(size(A),size(B)),value=max(abs(A(:)-B(:)));else,value=NaN;end
+    function vector = get_candidate_hf(index)
+        if any(isnan(cache.candidate_high(:, index)))
+            cache.candidate_high(:, index) = solve_sample(candidate_z(:, index), 'hf');
+            counts.candidate_hf = counts.candidate_hf + 1;
+        end
+        vector = cache.candidate_high(:, index);
+    end
+
+    function vector = get_pool_hf(index)
+        if any(isnan(cache.pool_high(:, index)))
+            cache.pool_high(:, index) = solve_sample(pool_z(:, index), 'hf');
+            counts.pool_hf = counts.pool_hf + 1;
+        end
+        vector = cache.pool_high(:, index);
+    end
+
+    function vector = solve_sample(z, fidelity)
+        factor = 1 + sum(z(:) ./ (2 * (1:numel(z))'));
+        lambda = 50 * factor;
+        cB = 20 * factor;
+        growth_multiplier = 1 + z(1);
+        radius = 0.45 * (1 + z(1));
+        initial = 0.95 * double(X.^2 + Y.^2 < radius^2);
+        switch fidelity
+            case 'ls'
+                field = solve_heleshaw(0, settings.T, settings.dx, settings.dx, ...
+                    settings.dt_ls, lambda, cB, growth_multiplier, initial);
+            case 'hf'
+                field = solve_pme(0, settings.T, settings.m, settings.dx, settings.dx, ...
+                    settings.dt_pme, lambda, cB, growth_multiplier, initial);
+            case 'coarse'
+                initial_coarse = 0.95 * double(Xc.^2 + Yc.^2 < radius^2);
+                coarse = solve_cmpme(0, settings.T, settings.coarse_m, settings.coarse_dx, ...
+                    settings.coarse_dt, lambda, cB, growth_multiplier, initial_coarse);
+                field = interp2(Xc, Yc, coarse, X, Y, 'linear', 0);
+        end
+        assert(all(isfinite(field(:))), 'Nonfinite PDE solution.');
+        vector = field(:);
+    end
 end

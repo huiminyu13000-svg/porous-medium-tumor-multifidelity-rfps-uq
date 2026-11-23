@@ -1,6 +1,6 @@
-% 基础函数：保留数值更新公式；由 run_experiment 统一调用。
+% PDE and numerical routines used by run_experiment.
 % Adapted from solver_HeleShaw_vivo_modified.m in the supplied archive.
-% Numerical model parameters, including the original PME growth factor 0.5, are preserved.
+% The input G0_k is the multiplier 1+z1; the physical coefficient is 0.5*G0_k.
 function [rho_mask, p] = solve_heleshaw(k, T_final, dx, dy, dt, ...
                                                        lambda_k, cB_k, G0_k, rho0)
 % Convert integer MAT metadata before dividing time by the step size.
@@ -14,7 +14,7 @@ Nt = round(T_final / dt);
 assert(Nt>=1 && abs(Nt*dt-T_final)<1e-12, 'Positive T must be a multiple of dt.');
 lambda = lambda_k;
 cB = cB_k;
-G0 = G0_k;  %we need to times 2 to recover the boundary loss
+G0 = 0.5 * G0_k;  % physical growth coefficient, shared by all fidelity levels
 z = 0;  % random/heterogeneity control (kept fixed here)
 mask0 = double(rho0>0);
 phi = signed_distance_from_mask(mask0, dx);

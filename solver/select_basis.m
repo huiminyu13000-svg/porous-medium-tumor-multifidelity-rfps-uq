@@ -1,4 +1,4 @@
-% 基础函数：保留数值更新公式；由 run_experiment 统一调用。
+% PDE and numerical routines used by run_experiment.
 % Original author solver; executable formulas retained.
 % Xu'an Dou attribution is retained where present in the original source.
 function[p,L] = select_basis(V, z, S)

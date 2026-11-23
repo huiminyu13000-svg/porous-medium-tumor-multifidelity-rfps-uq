@@ -1,5 +1,6 @@
-% 基础函数：保留数值更新公式；由 run_experiment 统一调用。
+% PDE and numerical routines used by run_experiment.
 % Adapted from solver_PME_vivo_modified_medium_tri.m.
+% The input G0_k is the multiplier 1+z1; the physical coefficient is 0.5*G0_k.
 % Retains its diagonal velocity operator; this differs from the full HF operator.
 function [rho_final, p_final] = solve_cmpme(k, T_final, m, dx, dt, ...
                                 lambda_k, cB_k, G0_k, rho0)
@@ -9,11 +10,11 @@ T_final=double(T_final);m=double(m);
 a = -2.5; b = 2.5;
 [X, Y] = meshgrid(a:dx:b, a:dx:b);
 Nx = size(X,1); Ny = size(Y,2);
-% dt supplied by the unified driver;                 % finer dt for stability at higher resolution
+% The time step is supplied by the experiment driver.
 Nt=round(T_final/dt);assert(Nt>=1&&abs(Nt*dt-T_final)<1e-12,'T must be a positive multiple of dt');
 lambda = lambda_k;
 cB = cB_k;
-G0 = G0_k;
+G0 = 0.5 * G0_k;  % physical growth coefficient
 z = 0;
 if nargin < 9
     error('Please provide initial rho0 as input.');
@@ -46,7 +47,7 @@ for step = 1:Nt
             error('Dimension mismatch in c-field (medium)');
         end
     end
-    G_field = 0.5 * G0 * c;
+    G_field = G0 * c;
     rhoGGG = G_field;
     Build_Matrix();
     [sol,flag] = gmres(@fA,b_sol,min(400,numel(b_sol)),1e-6,100);
